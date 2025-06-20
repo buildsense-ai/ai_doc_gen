@@ -461,9 +461,110 @@
             margin-left: 24px;
         }
 
-
         .btn-primary:hover {
             background: var(--accent-color-hover);
+        }
+
+        .action-cell-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        /* Custom styles for dashboard action buttons */
+        .btn-action {
+            padding: 14px 28px;
+            font-size: 1.05rem;
+            font-weight: 600;
+        }
+
+        .btn-icon {
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--secondary-text-color);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            background-color: var(--secondary-bg-color);
+            color: var(--primary-text-color);
+            border-color: #d1d5db;
+        }
+
+        /* --- Generation Modal --- */
+        .generation-modal-content {
+            background: var(--background-color);
+            padding: 2.5rem;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 680px;
+            text-align: left;
+        }
+
+        .generation-modal-content h3 {
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+            color: var(--primary-text-color);
+        }
+
+        .generation-modal-content p {
+            font-size: 1.1rem;
+            color: var(--secondary-text-color);
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .generation-form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .generation-form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            font-size: 1rem;
+        }
+
+        #generation-json-data {
+            height: 200px;
+        }
+
+        #generation-context-docs {
+            border: 2px dashed var(--border-color);
+            padding: 2rem;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        #generation-context-docs:hover {
+            background-color: var(--tertiary-bg-color);
+        }
+
+        #generation-context-docs-input {
+            display: none;
+        }
+
+        #file-list {
+            margin-top: 1rem;
+            font-style: italic;
+            color: var(--secondary-text-color);
+        }
+
+        #generation-submit-btn {
+            width: 100%;
+            padding: 1rem;
+            font-size: 1.1rem;
+            margin-top: 1rem;
         }
     </style>
 </head>
@@ -542,13 +643,13 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="template-select">选择模板:</label>
-                    <select id="template-select" name="template-select">
-                        <!-- Options will be populated by JS -->
-                    </select>
+                    <label>使用的模板:</label>
+                    <p id="generation-template-name"
+                        style="font-weight: 600; padding: 8px; background-color: var(--secondary-bg-color); border-radius: 6px;">
+                    </p>
                 </div>
                 <div class="form-group">
-                    <label for="additional-docs-input">附加信息 (文档/图片):</label>
+                    <label for="additional-docs-input">附加信息 (文档/图片, 可多选):</label>
                     <input type="file" id="additional-docs-input" multiple hidden>
                     <label for="additional-docs-input" class="file-input-label">点击上传文件</label>
                     <div id="additional-docs-list"></div>
@@ -567,9 +668,42 @@
         </div>
     </div>
 
+    <!-- Associate Template Modal -->
+    <div id="associate-template-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>关联模板</h3>
+                <button class="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="associate-template-select">从已有模板中选择:</label>
+                    <select id="associate-template-select">
+                        <!-- Options will be populated by JS -->
+                    </select>
+                </div>
+                <div class="form-group" style="text-align: center; margin: 1.5rem 0;">
+                    <span style="color: var(--secondary-text-color);">或</span>
+                </div>
+                <div class="form-group">
+                    <label for="associate-template-upload-input">上传新模板:</label>
+                    <input type="file" id="associate-template-upload-input" accept=".doc,.docx" hidden>
+                    <label for="associate-template-upload-input" class="file-input-label">点击上传 .doc 或 .docx 文件</label>
+                    <div id="associate-upload-filename" style="margin-top: 0.5rem; font-size: 0.9rem;"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="associate-template-submit" class="btn-primary">
+                    <div class="spinner"></div>
+                    <span class="btn-text">确认关联</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- File Upload Input (hidden) -->
     <input type="file" id="file-upload-input" style="display: none;">
-    <input type="file" id="item-template-upload-input" style="display: none;" accept=".doc,.docx">
+    <input type="file" id="item-filled-doc-upload-input" style="display: none;" accept=".doc,.docx">
 
     <script>
         document.addEventListener('DOMContentLoaded', function () {
@@ -595,19 +729,49 @@
             const additionalDocsInput = document.getElementById('additional-docs-input');
             const additionalDocsList = document.getElementById('additional-docs-list');
             const jsonInput = document.getElementById('generation-json-input');
+            const genTemplateName = document.getElementById('generation-template-name');
 
-            // Close modal functionality
-            genDocModal.addEventListener('click', (e) => {
-                if (e.target === genDocModal || e.target.classList.contains('modal-close-btn')) {
-                    genDocModal.classList.remove('visible');
+            // Associate Template Modal
+            const associateTemplateModal = document.getElementById('associate-template-modal');
+            const associateTemplateSelect = document.getElementById('associate-template-select');
+            const associateTemplateUploadInput = document.getElementById('associate-template-upload-input');
+            const associateUploadFilename = document.getElementById('associate-upload-filename');
+            const associateTemplateSubmitBtn = document.getElementById('associate-template-submit');
+
+            // Explicitly handle close for each modal to ensure reliability
+            document.querySelectorAll('.modal-overlay').forEach(modal => {
+                const closeBtn = modal.querySelector('.modal-close-btn');
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.classList.remove('visible');
+                    }
+                });
+                if (closeBtn) {
+                    closeBtn.addEventListener('click', () => {
+                        modal.classList.remove('visible');
+                    });
                 }
             });
 
             additionalDocsInput.addEventListener('change', () => {
-                additionalDocsList.innerHTML = '';
+                additionalDocsList.innerHTML = ''; // Clear previous list
                 if (additionalDocsInput.files.length > 0) {
-                    const files = Array.from(additionalDocsInput.files).map(f => f.name).join(', ');
-                    additionalDocsList.textContent = `已选择: ${files}`;
+                    const list = document.createElement('ul');
+                    list.style.listStyleType = 'none';
+                    list.style.paddingLeft = '0';
+                    list.style.marginTop = '0.5rem';
+
+                    Array.from(additionalDocsInput.files).forEach(file => {
+                        const listItem = document.createElement('li');
+                        listItem.textContent = file.name;
+                        listItem.style.padding = '4px 8px';
+                        listItem.style.backgroundColor = 'var(--tertiary-bg-color)';
+                        listItem.style.borderRadius = '4px';
+                        listItem.style.marginBottom = '4px';
+                        listItem.style.fontSize = '0.9rem';
+                        list.appendChild(listItem);
+                    });
+                    additionalDocsList.appendChild(list);
                 }
             });
 
@@ -688,14 +852,20 @@
                 chatMessages.appendChild(messageDiv);
 
                 // Handle options for assistant messages
-                if (options && options.length > 0) {
+                if (sender === 'assistant' && options && options.length > 0) {
                     // Check if it's the initial set of options, and move them
-                    if (options.some(opt => opt.action === 'upload_completion_list')) {
-                        populateUploadOptions(options);
-                    } else {
+                    const initialActions = ['upload_completion_list', 'upload_templates'];
+                    const initialOptions = options.filter(opt => initialActions.includes(opt.action));
+                    const otherOptions = options.filter(opt => !initialActions.includes(opt.action));
+
+                    if (initialOptions.length > 0) {
+                        populateUploadOptions(initialOptions);
+                    }
+
+                    if (otherOptions.length > 0) {
                         const optionsDiv = document.createElement('div');
                         optionsDiv.classList.add('message-options');
-                        options.forEach(option => {
+                        otherOptions.forEach(option => {
                             const button = createOptionButton(option.text, option.action, option.data, option.message_id);
                             optionsDiv.appendChild(button);
                         });
@@ -752,40 +922,60 @@
                     statusCell.appendChild(statusSpan);
 
                     const actionCell = document.createElement('td');
-                    actionCell.style.display = 'flex';
-                    actionCell.style.gap = '8px';
+                    const buttonsWrapper = document.createElement('div');
+                    buttonsWrapper.className = 'action-cell-buttons';
+
 
                     if (doc.status === '待处理') {
                         const generateBtn = document.createElement('button');
-                        generateBtn.classList.add('btn-small');
+                        generateBtn.classList.add('btn-small', 'btn-action');
                         generateBtn.textContent = '生成文档';
+                        if (!doc.matched_template_path) {
+                            generateBtn.disabled = true;
+                            generateBtn.style.opacity = 0.5;
+                            generateBtn.title = '请先关联一个模板';
+                        }
                         generateBtn.onclick = () => {
                             openGenerateModal(doc); // Pass whole doc object
                         };
-                        actionCell.appendChild(generateBtn);
+                        buttonsWrapper.appendChild(generateBtn);
                     } else if (doc.status === '已完成') {
                         const downloadBtn = document.createElement('button');
-                        downloadBtn.classList.add('btn-small');
+                        downloadBtn.classList.add('btn-small', 'btn-action');
                         downloadBtn.textContent = '下载';
                         downloadBtn.onclick = () => {
                             window.open(`/api/download/${sessionId}/${doc.id}`, '_blank');
                         };
-                        actionCell.appendChild(downloadBtn);
+                        buttonsWrapper.appendChild(downloadBtn);
                     } else if (doc.status === '生成失败') {
                         const errorSpan = document.createElement('span');
                         errorSpan.textContent = '失败';
                         errorSpan.style.color = '#e53e3e';
-                        actionCell.appendChild(errorSpan);
+                        buttonsWrapper.appendChild(errorSpan);
                     }
 
                     const uploadTemplateBtn = document.createElement('button');
-                    uploadTemplateBtn.classList.add('btn-small');
+                    uploadTemplateBtn.classList.add('btn-small', 'btn-action');
                     uploadTemplateBtn.textContent = '关联模板';
                     uploadTemplateBtn.style.backgroundColor = '#64748b';
-                    uploadTemplateBtn.onclick = () => uploadTemplateForItem(doc.id);
-                    actionCell.appendChild(uploadTemplateBtn);
+                    uploadTemplateBtn.onclick = () => openAssociateModal(doc);
+                    buttonsWrapper.appendChild(uploadTemplateBtn);
 
+                    const uploadFilledBtn = document.createElement('button');
+                    uploadFilledBtn.classList.add('btn-small', 'btn-action');
+                    uploadFilledBtn.textContent = '上传已填表';
+                    uploadFilledBtn.style.backgroundColor = '#34a853';
+                    uploadFilledBtn.onclick = () => uploadFilledDocForItem(doc.id);
+                    buttonsWrapper.appendChild(uploadFilledBtn);
 
+                    const resetBtn = document.createElement('button');
+                    resetBtn.className = 'btn-icon';
+                    resetBtn.title = '重置项目';
+                    resetBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>`;
+                    resetBtn.onclick = () => resetItem(doc.id);
+                    buttonsWrapper.appendChild(resetBtn);
+
+                    actionCell.appendChild(buttonsWrapper);
                     row.appendChild(nameCell);
                     row.appendChild(templateStatusCell);
                     row.appendChild(statusCell);
@@ -844,13 +1034,13 @@
                 }
             }
 
-            async function uploadTemplateForItem(docId) {
-                const itemTemplateInput = document.getElementById('item-template-upload-input');
-                itemTemplateInput.onchange = async () => {
-                    const file = itemTemplateInput.files[0];
+            async function uploadFilledDocForItem(docId) {
+                const itemFilledDocInput = document.getElementById('item-filled-doc-upload-input');
+                itemFilledDocInput.onchange = async () => {
+                    const file = itemFilledDocInput.files[0];
                     if (file) {
-                        appendMessage(`为项目关联模板: ${file.name}...`, 'user');
-                        const uploadResponse = await uploadFile(file, 'upload_item_template', docId);
+                        appendMessage(`为项目上传已填写的表格: ${file.name}...`, 'user');
+                        const uploadResponse = await uploadFile(file, 'upload_filled_doc', docId);
                         if (uploadResponse && uploadResponse.message) {
                             appendMessage(uploadResponse.message, 'assistant');
                             if (uploadResponse.dashboard) {
@@ -858,32 +1048,16 @@
                             }
                         }
                     }
-                    itemTemplateInput.value = ''; // Reset to allow re-uploading the same file
-                    itemTemplateInput.onchange = null;
+                    itemFilledDocInput.value = ''; // Reset
+                    itemFilledDocInput.onchange = null;
                 };
-                itemTemplateInput.click();
+                itemFilledDocInput.click();
             }
 
             async function openGenerateModal(doc) {
-                // Fetch available templates
-                const templates = await fetch('/api/templates').then(res => res.json());
-
-                templateSelect.innerHTML = '';
-                if (templates && templates.length > 0 && templates[0].path) {
-                    templates.forEach(template => {
-                        const option = document.createElement('option');
-                        option.value = template.path;
-                        option.textContent = template.name;
-                        templateSelect.appendChild(option);
-                    });
-                } else {
-                    templateSelect.innerHTML = '<option value="">无可用模板，请先上传</option>';
-                }
-
-                // Pre-select the matched template if it exists
-                if (doc.matched_template_path) {
-                    templateSelect.value = doc.matched_template_path;
-                }
+                // Set template name and path
+                genTemplateName.textContent = doc.matched_template_path.split('/').pop();
+                genDocSubmitBtn.dataset.templatePath = doc.matched_template_path;
 
                 // Clear previous state
                 jsonInput.value = '{\n  "备注": "可在此处添加自定义JSON信息"\n}';
@@ -894,9 +1068,35 @@
                 genDocModal.classList.add('visible');
             }
 
+            // New: Open Associate Template Modal
+            async function openAssociateModal(doc) {
+                // Fetch available templates
+                const templates = await fetch('/api/templates').then(res => res.json());
+
+                associateTemplateSelect.innerHTML = '';
+                if (templates && templates.length > 0 && templates[0].path) {
+                    associateTemplateSelect.innerHTML = '<option value="">-- 从已有模板中选择 --</option>';
+                    templates.forEach(template => {
+                        const option = document.createElement('option');
+                        option.value = template.path;
+                        option.textContent = template.name;
+                        associateTemplateSelect.appendChild(option);
+                    });
+                } else {
+                    associateTemplateSelect.innerHTML = '<option value="">无可用模板，请先上传</option>';
+                }
+
+                // Clear upload input
+                associateTemplateUploadInput.value = '';
+                associateUploadFilename.textContent = '';
+                associateTemplateSubmitBtn.dataset.docId = doc.id;
+                associateTemplateModal.classList.add('visible');
+            }
+
+
             genDocSubmitBtn.addEventListener('click', async function () {
                 const docId = this.dataset.docId;
-                const template = templateSelect.value;
+                const template = this.dataset.templatePath; // Get path from dataset
                 const jsonData = jsonInput.value.trim();
 
                 if (!template || template === "") {
@@ -905,34 +1105,106 @@
                 }
 
                 this.classList.add('loading');
+                appendMessage(`正在为 '${docId}' 生成文档，请稍候...`, 'assistant');
 
-                // TODO: Implement handling of additional file uploads.
-                // For now, the backend doesn't process these files in the generation step,
-                // but the structure is here for future implementation.
-                console.log("Generating document with:", {
-                    docId,
-                    template,
-                    jsonData,
-                    files: additionalDocsInput.files
-                });
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('doc_id', docId);
+                formData.append('template_path', template);
+                formData.append('json_data', jsonData);
 
-                // Backend call to generate the document
-                const response = await postMessage('生成文档', 'generate_document', {
-                    doc_id: docId,
-                    template_path: template,
-                    json_data: jsonData
-                });
-
-                this.classList.remove('loading');
-                genDocModal.classList.remove('visible');
-
-                if (response && response.message) {
-                    appendMessage(response.message, 'assistant');
-                    if (response.dashboard) {
-                        updateDashboard(response.dashboard);
+                // Append additional files
+                if (additionalDocsInput.files.length > 0) {
+                    for (const file of additionalDocsInput.files) {
+                        formData.append('additional_docs', file);
                     }
-                } else {
-                    appendMessage(`生成文档失败，请检查后台日志。`, 'assistant');
+                }
+
+                try {
+                    const response = await fetch('/api/generate', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.detail || '生成文档时发生未知错误。');
+                    }
+
+                    const result = await response.json();
+
+                    this.classList.remove('loading');
+                    genDocModal.classList.remove('visible');
+
+                    if (result && result.message) {
+                        appendMessage(result.message, 'assistant');
+                        if (result.dashboard) {
+                            updateDashboard(result.dashboard);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Generation failed:', error);
+                    appendMessage(`生成文档失败: ${error.message}`, 'assistant');
+                    this.classList.remove('loading');
+                    genDocModal.classList.remove('visible');
+                }
+            });
+
+            // New: Associate Template Submit Logic
+            associateTemplateUploadInput.addEventListener('change', () => {
+                if (associateTemplateUploadInput.files.length > 0) {
+                    associateUploadFilename.textContent = `已选择: ${associateTemplateUploadInput.files[0].name}`;
+                    associateTemplateSelect.value = ""; // Clear selection if uploading
+                }
+            });
+
+            associateTemplateSelect.addEventListener('change', () => {
+                if (associateTemplateSelect.value) {
+                    associateTemplateUploadInput.value = ''; // Clear file if selecting
+                    associateUploadFilename.textContent = '';
+                }
+            });
+
+            associateTemplateSubmitBtn.addEventListener('click', async function () {
+                const docId = this.dataset.docId;
+                const selectedTemplatePath = associateTemplateSelect.value;
+                const newTemplateFile = associateTemplateUploadInput.files[0];
+
+                if (!selectedTemplatePath && !newTemplateFile) {
+                    alert('请选择一个现有模板或上传一个新模板。');
+                    return;
+                }
+
+                this.classList.add('loading');
+
+                let response;
+                try {
+                    if (newTemplateFile) {
+                        // Option 1: Upload a new template and associate it
+                        appendMessage(`正在为项目关联新模板: ${newTemplateFile.name}...`, 'user');
+                        response = await uploadFile(newTemplateFile, 'upload_item_template', docId);
+                    } else {
+                        // Option 2: Associate an existing template
+                        appendMessage(`正在关联现有模板...`, 'user');
+                        response = await postMessage('关联模板', 'associate_template', {
+                            doc_id: docId,
+                            template_path: selectedTemplatePath
+                        });
+                    }
+
+                    if (response && response.message) {
+                        appendMessage(response.message, 'assistant');
+                        if (response.dashboard) {
+                            updateDashboard(response.dashboard);
+                        }
+                    } else {
+                        throw new Error('操作失败，未收到有效响应。');
+                    }
+                } catch (error) {
+                    appendMessage(`关联模板失败: ${error.message}`, 'assistant');
+                } finally {
+                    this.classList.remove('loading');
+                    associateTemplateModal.classList.remove('visible');
                 }
             });
 
@@ -956,6 +1228,20 @@
             });
 
             initializeChat();
+
+            async function resetItem(docId) {
+                if (!confirm(`您确定要重置项目吗？此操作将清除已生成的文档和已关联的模板。`)) {
+                    return;
+                }
+                appendMessage(`正在重置项目...`, 'user');
+                const response = await postMessage('重置项目', 'reset_item', { doc_id: docId });
+                if (response && response.message) {
+                    appendMessage(response.message, 'assistant');
+                    if (response.dashboard) {
+                        updateDashboard(response.dashboard);
+                    }
+                }
+            }
         });
     </script>
 </body>

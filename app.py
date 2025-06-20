@@ -49,7 +49,7 @@ class DocumentItem:
     def __init__(self, name: str, doc_id: str):
         self.id = doc_id
         self.name = name
-        self.status = "待处理"  # "待处理" or "已完成"
+        self.status = "待处理"  # "待处理", "已完成", "生成失败"
         self.filled_document_path: Optional[str] = None
         self.error_info: Optional[str] = None
         self.matched_template_path: Optional[str] = None
@@ -91,6 +91,12 @@ def get_or_create_session(session_id: str) -> ChatSession:
         sessions[session_id] = ChatSession(session_id)
     return sessions[session_id]
 
+def get_session_upload_dir(session_id: str) -> Path:
+    """Gets and creates the upload directory for a session."""
+    upload_dir = Path("uploads") / session_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
 # --- API Endpoints ---
 @app.get("/", response_class=HTMLResponse)
 async def main_page(request: Request):
@@ -115,6 +121,101 @@ async def get_templates():
         
     return templates_list
 
+@app.post("/api/generate")
+async def generate_document_handler(
+    session_id: str = Form(...),
+    doc_id: str = Form(...),
+    template_path: str = Form(...),
+    json_data: str = Form(...),
+    additional_docs: List[UploadFile] = File([])
+):
+    """
+    Handles the primary document generation request with multimodal input.
+    """
+    session = get_or_create_session(session_id)
+    doc_item = session.document_items.get(doc_id)
+    if not doc_item:
+        raise HTTPException(status_code=404, detail="Document item not found.")
+
+    upload_dir = get_session_upload_dir(session_id)
+    attachment_paths = []
+    direct_json = None
+    
+    # --- Workflow Logic ---
+    # Prioritize attachments over direct JSON input. This feels more intuitive for the user.
+    # If files are uploaded, they are the source of truth for generation.
+
+    # 1. Save any uploaded context files
+    for file in additional_docs:
+        file_path = upload_dir / f"context_{uuid.uuid4().hex[:8]}_{file.filename}"
+        with open(file_path, "wb") as buffer:
+            buffer.write(await file.read())
+        attachment_paths.append(str(file_path))
+        logger.info(f"💾 Saved context file for generation: {file_path}")
+
+    # 2. Decide on the data source
+    if not attachment_paths:
+        # No attachments, so try to use the JSON data from the textarea
+        logger.info("No attachments provided. Checking for direct JSON input.")
+        if json_data and json_data.strip() and json_data.strip() != "{}":
+            try:
+                direct_json = json.loads(json_data)
+                logger.info("✅ Using valid JSON data provided by user.")
+            except json.JSONDecodeError:
+                logger.error("⚠️ Invalid JSON provided by user and no attachments. Generation will fail.", exc_info=True)
+                raise HTTPException(status_code=400, detail="Provided JSON is invalid and no context files were uploaded.")
+        else:
+            # No data source at all
+            logger.error("❌ No data source provided. User sent neither files nor JSON.")
+            raise HTTPException(status_code=400, detail="You must upload context documents or provide JSON data to generate a document.")
+    else:
+        # Attachments are present, they will be used as the primary source.
+        logger.info(f"✅ Attachments found ({len(attachment_paths)} files). They will be used for AI data extraction.")
+
+
+    output_dir = Path("generated_docs")
+    output_dir.mkdir(exist_ok=True)
+    # Sanitize the doc_item.name for the filename
+    safe_name = "".join(c for c in doc_item.name if c.isalnum() or c in (' ', '_')).rstrip()
+    output_path = output_dir / f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+
+    try:
+        success = ai_generator.run_generation(
+            doc_template_path=template_path,
+            output_path=str(output_path),
+            attachment_paths=attachment_paths, # Will be empty if direct_json is used
+            direct_json_data=direct_json      # Will be None if attachments are used
+        )
+
+        if success:
+            doc_item.status = "已完成"
+            doc_item.filled_document_path = str(output_path)
+            response_message = f"✅ 文档 '{doc_item.name}' 已成功生成！"
+        else:
+            doc_item.status = "生成失败"
+            doc_item.error_info = "AI生成过程出错或未能返回有效数据，请检查日志。"
+            response_message = f"❌ 生成文档 '{doc_item.name}' 失败。"
+    
+    except Exception as e:
+        logger.error(f"Error during document generation for '{doc_item.name}': {e}", exc_info=True)
+        doc_item.status = "生成失败"
+        doc_item.error_info = str(e)
+        response_message = f"❌ 生成文档 '{doc_item.name}' 时发生严重错误。"
+    
+    finally:
+        # Clean up temporary context files
+        for path in attachment_paths:
+            try:
+                os.remove(path)
+                logger.info(f"🗑️ Removed temp context file: {path}")
+            except OSError as e:
+                logger.error(f"Error removing temp file {path}: {e}")
+
+    return JSONResponse({
+        "message": response_message,
+        "dashboard": session.get_dashboard_data()
+    })
+
 @app.post("/api/chat/message")
 async def chat_handler(req: ChatRequest):
     """处理所有聊天、动作和文档生成请求"""
@@ -122,71 +223,40 @@ async def chat_handler(req: ChatRequest):
     response_message = ""
     response_options = []
     
-    if req.action == "generate_document":
+    if req.action == "associate_template":
+        data = req.data or {}
+        doc_id = data.get("doc_id")
+        template_path = data.get("template_path")
+        doc_item = session.document_items.get(doc_id)
+
+        if not doc_item or not template_path:
+            raise HTTPException(status_code=400, detail="Document item and template path are required.")
+        
+        doc_item.matched_template_path = template_path
+        response_message = f"✅ 模板已成功关联到项目 '{doc_item.name}'。"
+
+    elif req.action == "reset_item":
         data = req.data or {}
         doc_id = data.get("doc_id")
         doc_item = session.document_items.get(doc_id)
-        
+
         if not doc_item:
             raise HTTPException(status_code=404, detail="Document item not found.")
-
-        template_path = data.get("template_path")
-        json_data_str = data.get("json_data", "{}")
         
-        if not template_path:
-            raise HTTPException(status_code=400, detail="Template path is required.")
+        # Reset the item's state
+        doc_item.status = "待处理"
+        doc_item.filled_document_path = None
+        doc_item.error_info = None
+        doc_item.matched_template_path = None
+        
+        logger.info(f"🔄 Item '{doc_item.name}' ({doc_id}) has been reset.")
+        response_message = f"项目 '{doc_item.name}' 已重置。"
 
-        try:
-            # For now, we simulate the input data creation process.
-            # In a real scenario, this would involve a more complex data extraction from context files.
-            input_data = {"document_name": doc_item.name}
-            if json_data_str:
-                try:
-                    input_data.update(json.loads(json_data_str))
-                except json.JSONDecodeError:
-                    logger.warning("Invalid JSON provided in the generate document modal.")
-
-            # Create a temporary file for the JSON input
-            input_json_path = f"temp_input_{doc_id}.json"
-            with open(input_json_path, 'w', encoding='utf-8') as f:
-                json.dump(input_data, f, ensure_ascii=False, indent=2)
-
-            output_dir = Path("generated_docs")
-            output_dir.mkdir(exist_ok=True)
-            output_path = output_dir / f"{doc_item.name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-
-            # Run the generation workflow
-            success = ai_generator.run_complete_workflow(
-                doc_template_path=template_path,
-                json_input_path=input_json_path,
-                output_path=str(output_path)
-            )
-
-            if success:
-                doc_item.status = "已完成"
-                doc_item.filled_document_path = str(output_path)
-                response_message = f"✅ 文档 '{doc_item.name}' 已成功生成！"
-            else:
-                doc_item.status = "生成失败"
-                doc_item.error_info = "AI生成过程出错，请查看日志。"
-                response_message = f"❌ 生成文档 '{doc_item.name}' 失败。"
-
-            # Clean up temp file
-            os.remove(input_json_path)
-
-        except Exception as e:
-            logger.error(f"Error during document generation for '{doc_item.name}': {e}", exc_info=True)
-            doc_item.status = "生成失败"
-            doc_item.error_info = str(e)
-            response_message = f"❌ 生成文档 '{doc_item.name}' 时发生严重错误。"
-            
     elif req.message == '你好':
         response_message = "您好！我是AI文档生成助手。请从下方选择您要上传的内容类型，或直接在聊天框中向我提问。"
         response_options = [
             {"text": "项目竣工清单", "action": "upload_completion_list", "message_id": "init_1"},
             {"text": "多个模板", "action": "upload_templates", "message_id": "init_2"},
-            {"text": "多个已填好的表或文档", "action": "upload_filled_docs", "message_id": "init_3"},
-            {"text": "会议纪要/图片", "action": "upload_context_info", "message_id": "init_4"},
         ]
     else:
         response_message = f"我收到了您的消息: '{req.message}'. 目前通用聊天功能正在开发中。"
@@ -201,15 +271,14 @@ async def chat_handler(req: ChatRequest):
 async def upload_file_handler(
     session_id: str = Form(...),
     upload_type: str = Form(...),
-    file: UploadFile = File(...),
-    doc_id: Optional[str] = Form(None)
+    doc_id: Optional[str] = Form(None),
+    file: UploadFile = File(...)
 ):
     """文件上传处理"""
     session = get_or_create_session(session_id)
     
     # Create session-specific upload directory
-    upload_dir = Path("uploads") / session_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    upload_dir = get_session_upload_dir(session_id)
     
     file_path = upload_dir / file.filename
     with open(file_path, "wb") as buffer:
@@ -226,8 +295,28 @@ async def upload_file_handler(
             response_message = await process_completion_list(session, str(file_path), file.filename)
         elif upload_type == "upload_templates":
             response_message = await process_templates(session, str(file_path), file.filename)
-        elif upload_type in ["upload_filled_docs", "upload_context_info"]:
-            response_message = await process_context_info(session, str(file_path), file.filename)
+        elif upload_type == "upload_filled_doc":
+            if not doc_id:
+                 raise HTTPException(status_code=400, detail="doc_id is required for uploading a filled doc")
+            
+            output_dir = Path("generated_docs")
+            output_dir.mkdir(exist_ok=True)
+            # Use a unique name to avoid overwrites
+            new_filename = f"{Path(file.filename).stem}_{doc_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{Path(file.filename).suffix}"
+            saved_path = output_dir / new_filename
+            
+            # Since file is already saved in uploads, move it
+            os.rename(file_path, saved_path)
+
+            doc_item = session.document_items.get(doc_id)
+            if doc_item:
+                doc_item.status = "已完成"
+                doc_item.matched_template_path = "Manually Uploaded" # Indicate manual override
+                doc_item.filled_document_path = str(saved_path)
+                response_message = f"✅ 已为 '{doc_item.name}' 上传并归档已填写的文档。"
+            else:
+                response_message = f"⚠️ 找不到ID为 {doc_id} 的项目，但文件已保存。"
+
         else:
             response_message = f"未知的上传类型: {upload_type}"
     except Exception as e:
@@ -349,11 +438,6 @@ async def process_templates(session: ChatSession, file_path: str, filename: str)
         return f"✅ 模板 '{filename}' 已成功上传并可供使用。"
     else:
         return f"ℹ️ 模板 '{filename}' 已存在，无需重复上传。"
-
-async def process_context_info(session: ChatSession, file_path: str, filename: str) -> str:
-    """处理上下文信息文件（文档、图片等）"""
-    session.context_files[filename] = file_path
-    return f"✅ 上下文文件 '{filename}' 已成功上传。"
 
 # --- Main Execution ---
 if __name__ == '__main__':

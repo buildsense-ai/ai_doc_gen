@@ -10,9 +10,14 @@ import json
 import logging
 import subprocess
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from docx import Document
+from docx.shared import Inches, Pt
 from openai import OpenAI
+import base64
+import mimetypes
+import fitz  # PyMuPDF
+from docx import Document as DocxDocument
 
 # Load environment variables from .env file if it exists
 try:
@@ -23,7 +28,7 @@ except ImportError:
     pass
 
 # Import prompts
-from prompt_utils import get_fill_data_prompt
+from prompt_utils import get_fill_data_prompt, get_multimodal_extraction_prompt
 
 # 配置日志
 logging.basicConfig(
@@ -32,6 +37,11 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Define a directory for uploads and temporary files
+UPLOADS_DIR = "uploads"
+if not os.path.exists(UPLOADS_DIR):
+    os.makedirs(UPLOADS_DIR)
 
 class AIDocGenerator:
     """AI文档生成器 - 支持DOC转换"""
@@ -45,6 +55,60 @@ class AIDocGenerator:
         self.model = "google/gemini-2.5-pro-preview"
         logger.info("🤖 AI生成器初始化完成")
     
+    def _extract_json_from_response(self, response_content: str) -> str:
+        """
+        Extract JSON string from AI response content.
+        Handles various formats like markdown code blocks, plain JSON, etc.
+        """
+        if not response_content or not response_content.strip():
+            raise ValueError("AI response content is empty")
+        
+        content = response_content.strip()
+        
+        # Try to extract from markdown code block
+        if "```json" in content:
+            try:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end != -1:
+                    json_str = content[start:end].strip()
+                    if json_str:
+                        return json_str
+            except Exception:
+                pass
+        
+        # Try to extract from single backticks
+        if content.startswith("`") and content.endswith("`"):
+            json_str = content.strip("`").strip()
+            if json_str:
+                return json_str
+        
+        # Try to find JSON object boundaries
+        start_idx = content.find("{")
+        if start_idx != -1:
+            # Find the matching closing brace
+            brace_count = 0
+            for i, char in enumerate(content[start_idx:], start_idx):
+                if char == "{":
+                    brace_count += 1
+                elif char == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_str = content[start_idx:i+1]
+                        # Validate it's proper JSON
+                        try:
+                            json.loads(json_str)
+                            return json_str
+                        except json.JSONDecodeError:
+                            continue
+        
+        # If all else fails, try the content as-is
+        try:
+            json.loads(content)
+            return content
+        except json.JSONDecodeError:
+            raise ValueError(f"Could not extract valid JSON from AI response: {content[:200]}...")
+
     def convert_doc_to_docx(self, doc_path: str) -> str:
         """
         使用LibreOffice将.doc文件转换为.docx文件
@@ -206,6 +270,141 @@ class AIDocGenerator:
             logger.error(f"❌ 阶段2错误: {e}")
             raise
     
+    def stage2_1_ai_extract_data_from_sources(self, attachment_paths: List[str]) -> Dict[str, Any]:
+        """
+        Stage 2.1: Use multimodal AI to extract data from various documents and images.
+        """
+        logger.info("🧠 Stage 2.1: Kicking off multimodal AI data extraction...")
+        
+        try:
+            # This is a sample schema. In a real app, this might come from the template
+            # or a user configuration. For now, we'll use a schema based on sample_input.json
+            fields_to_extract = json.dumps({
+                "serial_number": "示例: GZ-FH-2025-001",
+                "project_name": "示例: 历史建筑修复项目",
+                "review_date": "示例: 2025-01-25",
+                "original_condition_review": "建筑物原始状态的描述。",
+                "damage_assessment_review": "发现的任何损伤的详细评估。",
+                "repair_plan_review": "拟定的修复计划。",
+                "project_lead": "项目负责人姓名。",
+                "reviewer": "审核人员姓名。",
+                "damage_photos_path": "损伤照片文件路径列表，如果有的话。",
+                "site_photos_path": "现场照片文件路径列表，如果有的话。",
+                "attachments": "相关图像文件路径列表，如果有的话。为每个图像提供描述性标题。"
+            }, indent=2, ensure_ascii=False)
+
+            prompt = get_multimodal_extraction_prompt(fields_to_extract)
+
+            # Build the message with text and images
+            content_parts = [{"type": "text", "text": prompt}]
+            
+            # --- Unified File Processing Loop ---
+            image_paths_for_prompt = []
+            temp_text_files = []
+
+            for file_path in attachment_paths:
+                file_name = os.path.basename(file_path)
+                logger.info(f"📄 Processing attachment: {file_name}")
+
+                try:
+                    if file_path.endswith(('.txt', '.md', '.json')):
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            file_content = f.read()
+                        text_part = f"\n\n--- Content from {file_name} ---\n{file_content}\n--- End of Content ---"
+                        content_parts[0]["text"] += text_part
+
+                    elif file_path.endswith('.docx'):
+                        doc = DocxDocument(file_path)
+                        full_text = "\n".join([p.text for p in doc.paragraphs])
+                        text_part = f"\n\n--- Content from {file_name} ---\n{full_text}\n--- End of Content ---"
+                        content_parts[0]["text"] += text_part
+
+                    elif file_path.endswith('.pdf'):
+                        doc = fitz.open(file_path)
+                        full_text = ""
+                        for page_num, page in enumerate(doc):
+                            full_text += page.get_text()
+                            # Extract images from PDF
+                            img_list = page.get_images(full=True)
+                            for img_index, img in enumerate(img_list):
+                                xref = img[0]
+                                base_image = doc.extract_image(xref)
+                                image_bytes = base_image["image"]
+                                image_ext = base_image["ext"]
+                                
+                                # Save image to a temporary file
+                                temp_image_filename = f"pdf_{os.path.splitext(file_name)[0]}_p{page_num+1}_img{img_index}.{image_ext}"
+                                temp_image_path = os.path.join(UPLOADS_DIR, temp_image_filename)
+                                with open(temp_image_path, "wb") as f:
+                                    f.write(image_bytes)
+                                
+                                image_paths_for_prompt.append(temp_image_path)
+                                logger.info(f"🖼️  Extracted image from PDF: {temp_image_path}")
+                        
+                        text_part = f"\n\n--- Content from {file_name} ---\n{full_text}\n--- End of Content ---"
+                        content_parts[0]["text"] += text_part
+                        doc.close()
+
+                    else: # Assumes it's an image if not a text-based file
+                        mime_type, _ = mimetypes.guess_type(file_path)
+                        if mime_type and mime_type.startswith('image/'):
+                            image_paths_for_prompt.append(file_path)
+                        else:
+                            logger.warning(f"⚠️ Unsupported file type, skipping: {file_name}")
+
+                except Exception as e:
+                    logger.error(f"❌ Error processing file {file_path}: {e}", exc_info=True)
+
+
+            # Add all collected images to the prompt
+            for image_path in image_paths_for_prompt:
+                try:
+                    mime_type, _ = mimetypes.guess_type(image_path)
+                    with open(image_path, "rb") as image_file:
+                        base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                    
+                    image_url = f"data:{mime_type};base64,{base64_image}"
+                    
+                    # Add a reference in the text part with Chinese description
+                    content_parts[0]["text"] += f"\n\n--- 附加图像 (文件路径: {image_path}) ---"
+                    
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": image_url}
+                    })
+                    logger.info(f"🖼️  Added image {image_path} to AI prompt.")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not process image file {image_path}: {e}")
+
+            logger.info("🧠 Calling multimodal AI to extract structured data... (This may take a moment)")
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": content_parts}],
+                temperature=0.1
+            )
+            
+            # Clean up extracted text files
+            for path in temp_text_files:
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    logger.error(f"Error removing temp text file {path}: {e}")
+            
+            # Extract and parse the JSON from the AI's response
+            if response.choices[0].message.content:
+                json_string = self._extract_json_from_response(response.choices[0].message.content)
+                extracted_data = json.loads(json_string)
+                
+                logger.info(f"✅ AI successfully extracted data. Keys: {list(extracted_data.keys())}")
+                return extracted_data
+            else:
+                raise ValueError("AI returned an empty response.")
+                
+        except Exception as e:
+            logger.error(f"❌ Stage 2.1 Error: {e}", exc_info=True)
+            raise
+
     def stage2_5_ai_generate_fill_data(self, structured_template: Dict[str, str], input_data: Dict[str, Any]) -> Dict[str, str]:
         """
         阶段2.5：使用AI将输入数据智能映射到模板结构，生成用于填充的最终数据。
@@ -264,10 +463,21 @@ class AIDocGenerator:
 
             fill_data = json.loads(json_text.strip())
             
+            # Check for attachments in the AI response
+            if '__attachments__' in fill_data:
+                logger.info(f"🎯 AI生成了 {len(fill_data['__attachments__'])} 个附件引用")
+                for i, att in enumerate(fill_data['__attachments__']):
+                    logger.info(f"   📎 附件 {i+1}: {att}")
+            else:
+                logger.info("ℹ️ AI响应中未包含附件数据")
+            
             logger.info(f"✅ AI成功生成 {len(fill_data)} 个字段的映射:")
             for key, value in fill_data.items():
-                preview = str(value)[:70] + "..." if len(str(value)) > 70 else str(value)
-                logger.info(f"   🔗 {key} -> '{preview}'")
+                if key == '__attachments__':
+                    logger.info(f"   🔗 {key} -> [包含 {len(value)} 个附件]")
+                else:
+                    preview = str(value)[:70] + "..." if len(str(value)) > 70 else str(value)
+                    logger.info(f"   🔗 {key} -> '{preview}'")
             
             return fill_data
             
@@ -300,6 +510,13 @@ class AIDocGenerator:
             doc = Document(template_path)
             filled_fields_count = 0
             
+            # Extract attachments before processing other fields
+            attachments_data = fill_data.pop('__attachments__', [])
+            logger.info(f"📎 发现 {len(attachments_data)} 个附件待处理")
+            if attachments_data:
+                for i, att in enumerate(attachments_data):
+                    logger.info(f"   附件 {i+1}: {att.get('title', 'N/A')} -> {att.get('path', 'N/A')}")
+            
             # 创建一份待填充字段的副本，用于追踪
             remaining_to_fill = set(fill_data.keys())
 
@@ -310,11 +527,56 @@ class AIDocGenerator:
                         if cell_key in fill_data:
                             fill_value = str(fill_data[cell_key])
                             # 清空单元格原有内容（如占位符），然后填充
-                            cell.text = ""
-                            cell.add_paragraph(fill_value)
+                            cell.text = fill_value
                             logger.info(f"   ✏️ 填充 {cell_key}: '{fill_value[:50]}...'")
                             filled_fields_count += 1
                             remaining_to_fill.discard(cell_key)
+
+            # Add attachments at the end of the document
+            if attachments_data:
+                logger.info(f"📎 开始附加 {len(attachments_data)} 个文件到文档末尾...")
+                # Add a page break before attachments if document is not empty
+                if len(doc.paragraphs) > 0 or len(doc.tables) > 0:
+                    doc.add_page_break()
+                
+                # Add a main heading for attachments section  
+                # Use paragraph instead of heading to avoid style issues
+                paragraph = doc.add_paragraph()
+                run = paragraph.add_run("附件")
+                run.bold = True
+                run.font.size = Pt(16)  # Larger font size like a heading
+                    
+                for i, attachment in enumerate(attachments_data, 1):
+                    title = attachment.get('title', f'附件 {i}')
+                    path = attachment.get('path')
+                    
+                    if path and os.path.exists(path):
+                        try:
+                            # Add numbered attachment heading using paragraph  
+                            heading_para = doc.add_paragraph()
+                            heading_run = heading_para.add_run(f"{i}. {title}")
+                            heading_run.bold = True
+                            heading_run.font.size = Pt(14)  # Slightly smaller than main heading
+                            
+                            # Determine optimal image size based on file size and type
+                            mime_type, _ = mimetypes.guess_type(path)
+                            if mime_type and mime_type.startswith('image/'):
+                                # Add the image with reasonable sizing
+                                doc.add_picture(path, width=Inches(6.0))
+                                logger.info(f"   ✅ 已附加图片: {path}")
+                            else:
+                                # For non-image files, add a note
+                                p = doc.add_paragraph(f"文件: {os.path.basename(path)}")
+                                logger.info(f"   📄 已添加文件引用: {path}")
+                                
+                        except Exception as e:
+                            logger.error(f"   ❌ 附加文件失败 {path}: {e}")
+                            # Add error note in document
+                            doc.add_paragraph(f"⚠️ 无法显示附件: {os.path.basename(path) if path else 'Unknown'}")
+                    else:
+                        logger.warning(f"   ⚠️ 附件文件未找到或路径无效: {path}")
+                        # Add missing file note in document
+                        doc.add_paragraph(f"⚠️ 附件文件未找到: {os.path.basename(path) if path else 'Unknown'}")
 
             # 保存文档
             doc.save(output_path)
@@ -334,19 +596,85 @@ class AIDocGenerator:
             logger.error(f"❌ 阶段3错误: {e}")
             raise
 
+    def run_generation(
+        self, 
+        doc_template_path: str, 
+        output_path: str, 
+        attachment_paths: Optional[List[str]] = None,
+        direct_json_data: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Runs the full document generation process.
+
+        Supports two workflows:
+        1. If 'direct_json_data' is provided, it uses that data directly.
+        2. If 'direct_json_data' is None, it runs AI extraction on 'attachment_paths'.
+        """
+        logger.info("🚀 Starting unified document generation process...")
+        
+        try:
+            # Stage 0: Convert .doc to .docx if necessary
+            if doc_template_path.lower().endswith('.doc'):
+                logger.info(f"📄 Detected .doc template. Attempting conversion for: {doc_template_path}")
+                processed_template_path = self.convert_doc_to_docx(doc_template_path)
+            else:
+                processed_template_path = doc_template_path
+
+            # Stage 1 is always required to know the template structure
+            template_structure = self.stage1_analyze_template(processed_template_path)
+            
+            input_data = {}
+            if direct_json_data:
+                logger.info("📄 Using user-provided JSON data directly.")
+                input_data = direct_json_data
+            elif attachment_paths:
+                logger.info("🧠 No direct JSON provided, starting AI extraction from attachments.")
+                # Stage 2.1: Use AI to extract data from attachments
+                input_data = self.stage2_1_ai_extract_data_from_sources(
+                    attachment_paths=attachment_paths
+                )
+            else:
+                raise ValueError("Generation failed: You must provide either direct JSON data or attachment files.")
+
+            # Stage 2.5: Use AI to map extracted/provided data to the template structure
+            fill_data = self.stage2_5_ai_generate_fill_data(
+                structured_template=template_structure,
+                input_data=input_data
+            )
+            
+            # Stage 3: Fill the Word template with the final data
+            self.stage3_fill_template(
+                template_path=processed_template_path,
+                output_path=output_path,
+                fill_data=fill_data
+            )
+            
+            logger.info(f"✅ Document generation complete: {output_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Document generation failed: {e}", exc_info=True)
+            return False
+
     def run_complete_workflow(self, doc_template_path: str, json_input_path: str, output_path: str):
         """
-        运行完整的文档生成工作流程
+        运行完整的3阶段工作流（从模板和JSON文件）
         """
         logger.info("🚀 开始完整的AI文档生成流程")
         logger.info("=" * 60)
         
         start_time = datetime.now()
 
+        # Create a dedicated directory for this generation job's intermediate files
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        job_dir = os.path.join("generated_docs", f"job_{timestamp}")
+        os.makedirs(job_dir, exist_ok=True)
+        logger.info(f"📁 Created job directory: {job_dir}")
+
         # 基于输入模板名称，创建中间文件的路径
         base_name = os.path.splitext(os.path.basename(doc_template_path))[0]
-        structure_output_path = f"{base_name}_template_structure.json"
-        fill_data_output_path = f"{base_name}_filled_data.json"
+        structure_output_path = os.path.join(job_dir, f"{base_name}_template_structure.json")
+        fill_data_output_path = os.path.join(job_dir, f"{base_name}_filled_data.json")
         
         try:
             # 阶段 0：DOC转DOCX (如果需要)
