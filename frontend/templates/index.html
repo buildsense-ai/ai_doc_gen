@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI文档生成器</title>
+    <style>
+        :root {
+            --background-color: #ffffff;
+            --secondary-bg-color: #f7f7f8;
+            --tertiary-bg-color: #eef2f9;
+            --primary-text-color: #0d1c37;
+            --secondary-text-color: #5a6474;
+            --accent-color: #4a80f5;
+            --accent-color-hover: #3c6ad8;
+            --border-color: #e5e7eb;
+            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background: var(--background-color);
+            color: var(--primary-text-color);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .main-container {
+            display: flex;
+            height: 100%;
+            width: 100%;
+        }
+
+        /* --- Sidebar / Dashboard --- */
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 80%;
+            max-width: 1200px;
+            background: var(--background-color);
+            border-right: 1px solid var(--border-color);
+            transform: translateX(-100%);
+            transition: transform 0.3s ease-in-out;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar.open {
+            transform: translateX(0);
+        }
+
+        .sidebar-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sidebar-header h2 {
+            font-size: 1.5rem;
+        }
+
+        #close-sidebar-btn {
+            background: none;
+            border: none;
+            font-size: 1.8rem;
+            cursor: pointer;
+            color: var(--secondary-text-color);
+        }
+
+        .document-list-container {
+            padding: 1rem;
+            overflow-y: auto;
+            flex-grow: 1;
+        }
+
+        .document-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .document-table th,
+        .document-table td {
+            padding: 0.8rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.95rem;
+        }
+
+        .document-table th {
+            font-weight: 600;
+            color: var(--secondary-text-color);
+        }
+
+        .document-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-align: center;
+        }
+
+        .status-completed {
+            background-color: #e6f4ea;
+            color: #34a853;
+        }
+
+        .status-pending {
+            background-color: #fef3e3;
+            color: #f9ab00;
+        }
+
+        .btn-small {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-small:hover {
+            background: var(--accent-color-hover);
+        }
+
+
+        /* --- Chat Area --- */
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--secondary-bg-color);
+            height: 100vh;
+        }
+
+        .chat-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--background-color);
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 1.5rem;
+        }
+
+        .chat-header h1 {
+            font-size: 1.5rem;
+        }
+
+        #open-sidebar-btn {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        #open-sidebar-btn:hover {
+            background: var(--accent-color-hover);
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 2rem;
+            overflow-y: auto;
+            background: var(--background-color);
+        }
+
+        .message {
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: flex-start;
+            max-width: 90%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .assistant-message {
+            max-width: 90%;
+        }
+
+        .user-message {
+            justify-content: flex-end;
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            margin-right: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+
+        .user-avatar {
+            background: var(--accent-color);
+            color: white;
+            margin-left: 1rem;
+        }
+
+        .assistant-avatar {
+            background: #19c37d;
+            color: white;
+        }
+
+        .message-content {
+            padding: 1rem 1.25rem;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 1.05rem;
+        }
+
+        .user-message .message-content {
+            background: var(--accent-color);
+            color: white;
+            border-bottom-right-radius: 2px;
+        }
+
+        .assistant-message .message-content {
+            background: var(--secondary-bg-color);
+            color: var(--primary-text-color);
+            border-bottom-left-radius: 2px;
+        }
+
+        /* --- Input Area --- */
+        .chat-input-area {
+            padding: 1.5rem;
+            border-top: 1px solid var(--border-color);
+            background: var(--background-color);
+        }
+
+        .input-wrapper {
+            max-width: 90%;
+            margin: 0 auto;
+        }
+
+        /* Upload buttons above input */
+        .upload-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 1rem;
+            justify-content: center;
+        }
+
+        .upload-btn {
+            background: var(--tertiary-bg-color);
+            color: var(--primary-text-color);
+            border: 1px solid var(--border-color);
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .upload-btn:hover {
+            background: #e1e7f0;
+            border-color: #d1d5db;
+        }
+
+        .input-container {
+            display: flex;
+            align-items: center;
+            background: var(--secondary-bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 0.5rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .input-container:focus-within {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px rgba(74, 128, 245, 0.2);
+        }
+
+        .message-input {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--primary-text-color);
+            padding: 0.75rem;
+            font-size: 1.1rem;
+        }
+
+        .message-input::placeholder {
+            color: var(--secondary-text-color);
+        }
+
+        .send-button {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 1.5rem;
+        }
+
+        .send-button:hover {
+            background: var(--accent-color-hover);
+        }
+
+        /* --- Modal Styles --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(13, 28, 55, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 3000;
+        }
+
+        .modal-overlay.visible {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--background-color);
+            padding: 2rem;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-header h3 {
+            font-size: 1.5rem;
+        }
+
+        .modal-close-btn {
+            background: none;
+            border: none;
+            font-size: 1.8rem;
+            cursor: pointer;
+            color: var(--secondary-text-color);
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .form-group select,
+        .form-group textarea,
+        .form-group .file-input-label {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            font-size: 1rem;
+            font-family: var(--font-family);
+        }
+
+        .file-input-label {
+            display: inline-block;
+            cursor: pointer;
+            background-color: var(--secondary-bg-color);
+        }
+
+        #additional-docs-list {
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        #generation-json-input {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .modal-footer {
+            text-align: right;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            position: relative;
+        }
+
+        .btn-primary .spinner {
+            display: none;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            width: 18px;
+            height: 18px;
+            animation: spin 1s ease-in-out infinite;
+            position: absolute;
+            left: 1rem;
+            top: 50%;
+            margin-top: -9px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .btn-primary.loading .spinner {
+            display: block;
+        }
+
+        .btn-primary.loading .btn-text {
+            margin-left: 24px;
+        }
+
+
+        .btn-primary:hover {
+            background: var(--accent-color-hover);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="main-container">
+        <!-- Dashboard Sidebar -->
+        <div id="dashboard-sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <h2>项目竣工清单</h2>
+                <button id="close-sidebar-btn">&times;</button>
+            </div>
+            <div class="document-list-container">
+                <table class="document-table">
+                    <thead>
+                        <tr>
+                            <th>文档名称</th>
+                            <th>模板状态</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="document-list">
+                        <!-- JS will populate this -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Chat Container -->
+        <div class="chat-container">
+            <div class="chat-header">
+                <button id="open-sidebar-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                    <span>项目清单</span>
+                </button>
+                <h1>AI 文档助手</h1>
+            </div>
+
+            <div class="chat-messages" id="chat-messages">
+                <!-- Messages will be dynamically added here -->
+            </div>
+
+            <div class="chat-input-area">
+                <div class="input-wrapper">
+                    <div class="upload-options" id="upload-options">
+                        <!-- JS will populate this with initial options -->
+                    </div>
+                    <div class="input-container">
+                        <input type="text" id="message-input" class="message-input" placeholder="输入消息...">
+                        <button class="send-button" id="send-button">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" class="feather feather-arrow-up">
+                                <line x1="12" y1="19" x2="12" y2="5"></line>
+                                <polyline points="5 12 12 5 19 12"></polyline>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generate Document Modal -->
+    <div id="generate-doc-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>生成文档</h3>
+                <button class="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="template-select">选择模板:</label>
+                    <select id="template-select" name="template-select">
+                        <!-- Options will be populated by JS -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="additional-docs-input">附加信息 (文档/图片):</label>
+                    <input type="file" id="additional-docs-input" multiple hidden>
+                    <label for="additional-docs-input" class="file-input-label">点击上传文件</label>
+                    <div id="additional-docs-list"></div>
+                </div>
+                <div class="form-group">
+                    <label for="generation-json-input">附加信息 (JSON格式):</label>
+                    <textarea id="generation-json-input" placeholder="可以粘贴额外的JSON数据..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="generate-doc-submit" class="btn-primary">
+                    <div class="spinner"></div>
+                    <span class="btn-text">生成</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Upload Input (hidden) -->
+    <input type="file" id="file-upload-input" style="display: none;">
+    <input type="file" id="item-template-upload-input" style="display: none;" accept=".doc,.docx">
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const chatMessages = document.getElementById('chat-messages');
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.getElementById('send-button');
+            const fileUploadInput = document.getElementById('file-upload-input');
+            const documentList = document.getElementById('document-list');
+            const uploadOptionsContainer = document.getElementById('upload-options');
+
+            // --- Sidebar / Dashboard ---
+            const openSidebarBtn = document.getElementById('open-sidebar-btn');
+            const closeSidebarBtn = document.getElementById('close-sidebar-btn');
+            const sidebar = document.getElementById('dashboard-sidebar');
+
+            openSidebarBtn.addEventListener('click', () => sidebar.classList.add('open'));
+            closeSidebarBtn.addEventListener('click', () => sidebar.classList.remove('open'));
+
+            // --- Modal ---
+            const genDocModal = document.getElementById('generate-doc-modal');
+            const genDocSubmitBtn = document.getElementById('generate-doc-submit');
+            const templateSelect = document.getElementById('template-select');
+            const additionalDocsInput = document.getElementById('additional-docs-input');
+            const additionalDocsList = document.getElementById('additional-docs-list');
+            const jsonInput = document.getElementById('generation-json-input');
+
+            // Close modal functionality
+            genDocModal.addEventListener('click', (e) => {
+                if (e.target === genDocModal || e.target.classList.contains('modal-close-btn')) {
+                    genDocModal.classList.remove('visible');
+                }
+            });
+
+            additionalDocsInput.addEventListener('change', () => {
+                additionalDocsList.innerHTML = '';
+                if (additionalDocsInput.files.length > 0) {
+                    const files = Array.from(additionalDocsInput.files).map(f => f.name).join(', ');
+                    additionalDocsList.textContent = `已选择: ${files}`;
+                }
+            });
+
+
+            let sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            let currentAction = null;
+            let currentMessageId = null;
+
+            // --- API Communication ---
+            async function postMessage(message, action = null, data = null) {
+                const payload = {
+                    session_id: sessionId,
+                    message: message,
+                    action: action,
+                    data: data,
+                    message_id: currentMessageId
+                };
+
+                try {
+                    const response = await fetch('/api/chat/message', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error posting message:', error);
+                    appendMessage('哎呀，出错了。无法连接到服务器。', 'assistant');
+                }
+            }
+
+            async function uploadFile(file, uploadType, docId = null) {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('session_id', sessionId);
+                formData.append('upload_type', uploadType);
+                if (docId) {
+                    formData.append('doc_id', docId);
+                }
+
+                try {
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error uploading file:', error);
+                    appendMessage(`上传文件 ${file.name} 失败。`, 'assistant');
+                }
+            }
+
+            // --- UI Updates ---
+            function appendMessage(text, sender, options = []) {
+                const messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', `${sender}-message`);
+
+                const avatar = document.createElement('div');
+                avatar.classList.add('message-avatar', `${sender}-avatar`);
+                avatar.textContent = sender === 'user' ? '我' : 'AI';
+
+                const contentDiv = document.createElement('div');
+                contentDiv.classList.add('message-content');
+                // Basic markdown for lists
+                text = text.replace(/(\n- )/g, '<br>- ').replace(/(\n\* )/g, '<br>* ');
+                contentDiv.innerHTML = text;
+
+                if (sender === 'user') {
+                    messageDiv.appendChild(contentDiv);
+                    messageDiv.appendChild(avatar);
+                } else {
+                    messageDiv.appendChild(avatar);
+                    messageDiv.appendChild(contentDiv);
+                }
+
+                chatMessages.appendChild(messageDiv);
+
+                // Handle options for assistant messages
+                if (options && options.length > 0) {
+                    // Check if it's the initial set of options, and move them
+                    if (options.some(opt => opt.action === 'upload_completion_list')) {
+                        populateUploadOptions(options);
+                    } else {
+                        const optionsDiv = document.createElement('div');
+                        optionsDiv.classList.add('message-options');
+                        options.forEach(option => {
+                            const button = createOptionButton(option.text, option.action, option.data, option.message_id);
+                            optionsDiv.appendChild(button);
+                        });
+                        contentDiv.appendChild(optionsDiv);
+                    }
+                }
+
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            function populateUploadOptions(options) {
+                uploadOptionsContainer.innerHTML = '';
+                options.forEach(option => {
+                    const button = document.createElement('button');
+                    button.classList.add('upload-btn');
+                    button.textContent = option.text;
+                    button.dataset.action = option.action;
+                    button.dataset.messageId = option.message_id;
+                    button.addEventListener('click', () => handleOptionClick(option.action, option.data, option.message_id));
+                    uploadOptionsContainer.appendChild(button);
+                });
+            }
+
+            function createOptionButton(text, action, data, messageId) {
+                const button = document.createElement('button');
+                button.classList.add('option-button');
+                button.textContent = text;
+                button.addEventListener('click', () => handleOptionClick(action, data, messageId));
+                return button;
+            }
+
+            function updateDashboard(documents) {
+                documentList.innerHTML = '';
+                if (!documents || documents.length === 0) {
+                    documentList.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 2rem;">清单为空</td></tr>';
+                    return;
+                }
+                documents.forEach(doc => {
+                    const row = document.createElement('tr');
+
+                    const nameCell = document.createElement('td');
+                    nameCell.textContent = doc.name;
+
+                    const templateStatusCell = document.createElement('td');
+                    const templateStatusSpan = document.createElement('span');
+                    templateStatusSpan.classList.add('document-status', doc.template_status === '已匹配' ? 'status-completed' : 'status-pending');
+                    templateStatusSpan.textContent = doc.template_status;
+                    templateStatusCell.appendChild(templateStatusSpan);
+
+                    const statusCell = document.createElement('td');
+                    const statusSpan = document.createElement('span');
+                    statusSpan.classList.add('document-status', doc.status === '已完成' ? 'status-completed' : 'status-pending');
+                    statusSpan.textContent = doc.status;
+                    statusCell.appendChild(statusSpan);
+
+                    const actionCell = document.createElement('td');
+                    actionCell.style.display = 'flex';
+                    actionCell.style.gap = '8px';
+
+                    if (doc.status === '待处理') {
+                        const generateBtn = document.createElement('button');
+                        generateBtn.classList.add('btn-small');
+                        generateBtn.textContent = '生成文档';
+                        generateBtn.onclick = () => {
+                            openGenerateModal(doc); // Pass whole doc object
+                        };
+                        actionCell.appendChild(generateBtn);
+                    } else if (doc.status === '已完成') {
+                        const downloadBtn = document.createElement('button');
+                        downloadBtn.classList.add('btn-small');
+                        downloadBtn.textContent = '下载';
+                        downloadBtn.onclick = () => {
+                            window.open(`/api/download/${sessionId}/${doc.id}`, '_blank');
+                        };
+                        actionCell.appendChild(downloadBtn);
+                    } else if (doc.status === '生成失败') {
+                        const errorSpan = document.createElement('span');
+                        errorSpan.textContent = '失败';
+                        errorSpan.style.color = '#e53e3e';
+                        actionCell.appendChild(errorSpan);
+                    }
+
+                    const uploadTemplateBtn = document.createElement('button');
+                    uploadTemplateBtn.classList.add('btn-small');
+                    uploadTemplateBtn.textContent = '关联模板';
+                    uploadTemplateBtn.style.backgroundColor = '#64748b';
+                    uploadTemplateBtn.onclick = () => uploadTemplateForItem(doc.id);
+                    actionCell.appendChild(uploadTemplateBtn);
+
+
+                    row.appendChild(nameCell);
+                    row.appendChild(templateStatusCell);
+                    row.appendChild(statusCell);
+                    row.appendChild(actionCell);
+                    documentList.appendChild(row);
+                });
+            }
+
+            // --- Event Handlers ---
+            async function handleSendMessage() {
+                const messageText = messageInput.value.trim();
+                if (!messageText) return;
+
+                appendMessage(messageText, 'user');
+                messageInput.value = '';
+
+                const response = await postMessage(messageText);
+                if (response && response.message) {
+                    appendMessage(response.message, 'assistant', response.options);
+                    if (response.dashboard) {
+                        updateDashboard(response.dashboard);
+                    }
+                }
+            }
+
+            async function handleOptionClick(action, data, messageId) {
+                currentAction = action;
+                currentMessageId = messageId;
+
+                if (action && action.startsWith('upload_')) {
+                    fileUploadInput.onchange = async () => {
+                        const file = fileUploadInput.files[0];
+                        if (file) {
+                            appendMessage(`正在上传: ${file.name}...`, 'user');
+                            const uploadResponse = await uploadFile(file, action);
+                            if (uploadResponse && uploadResponse.message) {
+                                appendMessage(uploadResponse.message, 'assistant', uploadResponse.options);
+                                if (uploadResponse.dashboard) {
+                                    updateDashboard(uploadResponse.dashboard);
+                                }
+                            }
+                        }
+                        // Reset onchange handler
+                        fileUploadInput.onchange = null;
+                    };
+                    fileUploadInput.click();
+                } else {
+                    // For non-upload actions, just send the message
+                    const response = await postMessage(`选择了: ${action}`, action, data);
+                    if (response && response.message) {
+                        appendMessage(response.message, 'assistant', response.options);
+                        if (response.dashboard) {
+                            updateDashboard(response.dashboard);
+                        }
+                    }
+                }
+            }
+
+            async function uploadTemplateForItem(docId) {
+                const itemTemplateInput = document.getElementById('item-template-upload-input');
+                itemTemplateInput.onchange = async () => {
+                    const file = itemTemplateInput.files[0];
+                    if (file) {
+                        appendMessage(`为项目关联模板: ${file.name}...`, 'user');
+                        const uploadResponse = await uploadFile(file, 'upload_item_template', docId);
+                        if (uploadResponse && uploadResponse.message) {
+                            appendMessage(uploadResponse.message, 'assistant');
+                            if (uploadResponse.dashboard) {
+                                updateDashboard(uploadResponse.dashboard);
+                            }
+                        }
+                    }
+                    itemTemplateInput.value = ''; // Reset to allow re-uploading the same file
+                    itemTemplateInput.onchange = null;
+                };
+                itemTemplateInput.click();
+            }
+
+            async function openGenerateModal(doc) {
+                // Fetch available templates
+                const templates = await fetch('/api/templates').then(res => res.json());
+
+                templateSelect.innerHTML = '';
+                if (templates && templates.length > 0 && templates[0].path) {
+                    templates.forEach(template => {
+                        const option = document.createElement('option');
+                        option.value = template.path;
+                        option.textContent = template.name;
+                        templateSelect.appendChild(option);
+                    });
+                } else {
+                    templateSelect.innerHTML = '<option value="">无可用模板，请先上传</option>';
+                }
+
+                // Pre-select the matched template if it exists
+                if (doc.matched_template_path) {
+                    templateSelect.value = doc.matched_template_path;
+                }
+
+                // Clear previous state
+                jsonInput.value = '{\n  "备注": "可在此处添加自定义JSON信息"\n}';
+                additionalDocsInput.value = '';
+                additionalDocsList.innerHTML = '';
+
+                genDocSubmitBtn.dataset.docId = doc.id; // Use docId
+                genDocModal.classList.add('visible');
+            }
+
+            genDocSubmitBtn.addEventListener('click', async function () {
+                const docId = this.dataset.docId;
+                const template = templateSelect.value;
+                const jsonData = jsonInput.value.trim();
+
+                if (!template || template === "") {
+                    alert('请选择一个模板。');
+                    return;
+                }
+
+                this.classList.add('loading');
+
+                // TODO: Implement handling of additional file uploads.
+                // For now, the backend doesn't process these files in the generation step,
+                // but the structure is here for future implementation.
+                console.log("Generating document with:", {
+                    docId,
+                    template,
+                    jsonData,
+                    files: additionalDocsInput.files
+                });
+
+                // Backend call to generate the document
+                const response = await postMessage('生成文档', 'generate_document', {
+                    doc_id: docId,
+                    template_path: template,
+                    json_data: jsonData
+                });
+
+                this.classList.remove('loading');
+                genDocModal.classList.remove('visible');
+
+                if (response && response.message) {
+                    appendMessage(response.message, 'assistant');
+                    if (response.dashboard) {
+                        updateDashboard(response.dashboard);
+                    }
+                } else {
+                    appendMessage(`生成文档失败，请检查后台日志。`, 'assistant');
+                }
+            });
+
+
+            // --- Initial Load ---
+            async function initializeChat() {
+                const response = await postMessage('你好');
+                if (response && response.message) {
+                    appendMessage(response.message, 'assistant', response.options);
+                    if (response.dashboard) {
+                        updateDashboard(response.dashboard);
+                    }
+                }
+            }
+
+            sendButton.addEventListener('click', handleSendMessage);
+            messageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    handleSendMessage();
+                }
+            });
+
+            initializeChat();
+        });
+    </script>
+</body>
+
+</html>
